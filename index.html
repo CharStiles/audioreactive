@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Reactive Shader</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            overflow: hidden;
+            font-family: 'Arial', sans-serif;
+        }
+
+        #canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            cursor: pointer;
+        }
+
+        .controls {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 100;
+            color: white;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 20px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            min-width: 250px;
+            transition: all 0.3s ease;
+        }
+
+        .controls.minimized {
+            padding: 10px;
+            min-width: auto;
+        }
+
+        .controls.minimized .controls-content {
+            display: none;
+        }
+
+        .minimize-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: rgba(255, 255, 255, 0.2);
+            border: none;
+            color: white;
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            transition: background 0.2s ease;
+        }
+
+        .minimize-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+        }
+
+        .controls.minimized .minimize-btn {
+            position: static;
+            margin: 0;
+        }
+
+        .controls h1 {
+            font-size: 20px;
+            margin-bottom: 15px;
+            color: white;
+        }
+
+        .controls p {
+            margin-bottom: 10px;
+            font-size: 14px;
+            opacity: 0.8;
+        }
+
+        .slider-container {
+            margin-top: 15px;
+        }
+
+        .slider-label {
+            display: block;
+            margin-bottom: 5px;
+            font-size: 14px;
+        }
+
+        .sensitivity-slider {
+            width: 100%;
+            height: 6px;
+            border-radius: 3px;
+            background: #333;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .sensitivity-slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: white;
+            cursor: pointer;
+        }
+
+        .sensitivity-slider::-moz-range-thumb {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: white;
+            cursor: pointer;
+            border: none;
+        }
+
+        .audio-level {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            z-index: 100;
+            color: white;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 15px;
+            border-radius: 10px;
+            backdrop-filter: blur(10px);
+            font-size: 14px;
+        }
+
+        .loading {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            color: white;
+            font-size: 18px;
+            z-index: 200;
+        }
+    </style>
+</head>
+<body>
+    <div class="loading" id="loading">Click to start audio-reactive shader</div>
+    
+    <div class="controls" id="controls">
+        <button class="minimize-btn" id="minimizeBtn">−</button>
+        
+        <div class="controls-content">
+            <h1>Audio Reactive Shader</h1>
+            <p>Click anywhere to start audio input</p>
+            <p>Black = no sound, White = loud sound</p>
+            
+            <div class="slider-container">
+                <label class="slider-label" for="sensitivitySlider">Sensitivity:</label>
+                <input type="range" id="sensitivitySlider" class="sensitivity-slider" 
+                       min="0.1" max="5.0" step="0.1" value="1.0">
+                <span id="sensitivityValue">1.0</span>
+            </div>
+        </div>
+    </div>
+
+    <canvas id="canvas"></canvas>
+
+    <script>
+        class AudioReactiveShader {
+            constructor() {
+                this.canvas = document.getElementById('canvas');
+                this.gl = this.canvas.getContext('webgl') || this.canvas.getContext('experimental-webgl');
+                this.audioContext = null;
+                this.analyser = null;
+                this.microphone = null;
+                this.dataArray = null;
+                this.isPlaying = false;
+                this.sensitivity = 1.0;
+                
+                this.init();
+            }
+
+            init() {
+                this.setupCanvas();
+                this.setupShaders();
+                this.setupEventListeners();
+                this.animate();
+            }
+
+            setupCanvas() {
+                this.canvas.width = window.innerWidth;
+                this.canvas.height = window.innerHeight;
+                this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+            }
+
+            setupShaders() {
+                const vertexShaderSource = `
+                    attribute vec2 a_position;
+                    varying vec2 v_uv;
+                    
+                    void main() {
+                        gl_Position = vec4(a_position, 0.0, 1.0);
+                        v_uv = (a_position + 1.0) * 0.5;
+                    }
+                `;
+
+                const fragmentShaderSource = `
+                    precision mediump float;
+                    
+                    uniform float u_audioLevel;
+                    uniform float u_sensitivity;
+                    
+                    varying vec2 v_uv;
+                    
+                    void main() {
+                        // Simple black to white gradient based on audio level
+                        float audioIntensity = u_audioLevel * u_sensitivity;
+                        audioIntensity = clamp(audioIntensity, 0.0, 1.0);
+                        
+                        // Create smooth gradient from black to white
+                        vec3 color = vec3(audioIntensity);
+                        
+                        gl_FragColor = vec4(color, 1.0);
+                    }
+                `;
+
+                this.vertexShader = this.createShader(this.gl.VERTEX_SHADER, vertexShaderSource);
+                this.fragmentShader = this.createShader(this.gl.FRAGMENT_SHADER, fragmentShaderSource);
+                this.program = this.createProgram(this.vertexShader, this.fragmentShader);
+                
+                this.gl.useProgram(this.program);
+                
+                // Create quad geometry
+                const positions = new Float32Array([
+                    -1, -1,
+                     1, -1,
+                    -1,  1,
+                     1,  1,
+                ]);
+                
+                this.buffer = this.gl.createBuffer();
+                this.gl.bindBuffer(this.gl.ARRAY_BUFFER, this.buffer);
+                this.gl.bufferData(this.gl.ARRAY_BUFFER, positions, this.gl.STATIC_DRAW);
+                
+                const positionLocation = this.gl.getAttribLocation(this.program, 'a_position');
+                this.gl.enableVertexAttribArray(positionLocation);
+                this.gl.vertexAttribPointer(positionLocation, 2, this.gl.FLOAT, false, 0, 0);
+                
+                // Get uniform locations
+                this.audioLevelLocation = this.gl.getUniformLocation(this.program, 'u_audioLevel');
+                this.sensitivityLocation = this.gl.getUniformLocation(this.program, 'u_sensitivity');
+            }
+
+            createShader(type, source) {
+                const shader = this.gl.createShader(type);
+                this.gl.shaderSource(shader, source);
+                this.gl.compileShader(shader);
+                
+                if (!this.gl.getShaderParameter(shader, this.gl.COMPILE_STATUS)) {
+                    console.error('Shader compilation error:', this.gl.getShaderInfoLog(shader));
+                    this.gl.deleteShader(shader);
+                    return null;
+                }
+                
+                return shader;
+            }
+
+            createProgram(vertexShader, fragmentShader) {
+                const program = this.gl.createProgram();
+                this.gl.attachShader(program, vertexShader);
+                this.gl.attachShader(program, fragmentShader);
+                this.gl.linkProgram(program);
+                
+                if (!this.gl.getProgramParameter(program, this.gl.LINK_STATUS)) {
+                    console.error('Program linking error:', this.gl.getProgramInfoLog(program));
+                    this.gl.deleteProgram(program);
+                    return null;
+                }
+                
+                return program;
+            }
+
+            setupEventListeners() {
+                // Click to start audio
+                this.canvas.addEventListener('click', () => {
+                    if (!this.isPlaying) {
+                        this.startAudio();
+                    }
+                });
+
+                // Sensitivity slider
+                const sensitivitySlider = document.getElementById('sensitivitySlider');
+                const sensitivityValue = document.getElementById('sensitivityValue');
+                
+                sensitivitySlider.addEventListener('input', (e) => {
+                    this.sensitivity = parseFloat(e.target.value);
+                    sensitivityValue.textContent = this.sensitivity.toFixed(1);
+                });
+
+                // Minimize button
+                const minimizeBtn = document.getElementById('minimizeBtn');
+                const controls = document.getElementById('controls');
+                
+                minimizeBtn.addEventListener('click', () => {
+                    controls.classList.toggle('minimized');
+                    minimizeBtn.textContent = controls.classList.contains('minimized') ? '+' : '−';
+                });
+
+                // Window resize
+                window.addEventListener('resize', () => {
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
+                    this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+                });
+            }
+
+            async startAudio() {
+                try {
+                    this.audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                    this.analyser = this.audioContext.createAnalyser();
+                    this.analyser.fftSize = 64;
+                    
+                    const bufferLength = this.analyser.frequencyBinCount;
+                    this.dataArray = new Uint8Array(bufferLength);
+                    
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    this.microphone = this.audioContext.createMediaStreamSource(stream);
+                    this.microphone.connect(this.analyser);
+                    
+                    this.isPlaying = true;
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('audioLevel').style.display = 'block';
+                    
+                    this.updateAudioLevel();
+                } catch (error) {
+                    console.error('Error accessing microphone:', error);
+                    alert('Could not access microphone. Please allow microphone access and refresh the page.');
+                }
+            }
+
+            updateAudioLevel() {
+                if (!this.analyser) return;
+                
+                this.analyser.getByteFrequencyData(this.dataArray);
+                
+                const audioLevel = this.dataArray.reduce((a, b) => a + b) / this.dataArray.length;
+                document.getElementById('levelValue').textContent = Math.round(audioLevel);
+                
+                requestAnimationFrame(() => this.updateAudioLevel());
+            }
+
+            animate() {
+                this.gl.clear(this.gl.COLOR_BUFFER_BIT);
+                
+                // Get audio level
+                let audioLevel = 0;
+                if (this.analyser && this.dataArray) {
+                    this.analyser.getByteFrequencyData(this.dataArray);
+                    audioLevel = this.dataArray.reduce((a, b) => a + b) / this.dataArray.length / 255;
+                }
+                
+                // Set uniforms
+                this.gl.uniform1f(this.audioLevelLocation, audioLevel);
+                this.gl.uniform1f(this.sensitivityLocation, this.sensitivity);
+                
+                // Draw
+                this.gl.drawArrays(this.gl.TRIANGLE_STRIP, 0, 4);
+                
+                requestAnimationFrame(() => this.animate());
+            }
+        }
+
+        // Initialize the audio reactive shader
+        window.addEventListener('load', () => {
+            new AudioReactiveShader();
+        });
+    </script>
+</body>
+</html>
